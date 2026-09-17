@@ -88,6 +88,8 @@ jobs:
           ls -lh pi-win.tar.gz pi-win.tar.gz.*
 
       - name: Push two parts to dl branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cd packages/coding-agent/dist
