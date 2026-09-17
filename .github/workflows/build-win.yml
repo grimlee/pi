@@ -7,7 +7,7 @@ on:
         description: 'Tag/commit 构建（如 v0.85.1 或 main）'
         required: false
         type: string
-        default: 'v0.85.1'
+        default: 'main'
 
 permissions:
   contents: write
