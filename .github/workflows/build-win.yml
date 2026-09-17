@@ -1,4 +1,4 @@
-name: Build Windows x64 only (pi.e, 2 parts)
+name: Build Windows x64 only (pi.e, base64 5MiB parts)
 
 on:
   workflow_dispatch:
@@ -76,28 +76,29 @@ jobs:
           mv -f pi.e "$out/pi.e"
           du -sh "$out"
 
-      - name: Package and split into two parts
+      - name: Package, base64, split into 5 MiB text parts
         working-directory: packages/coding-agent/dist
         run: |
           set -euo pipefail
+          rm -rf b64
+          mkdir -p b64
           tar -czf pi-win.tar.gz -C win .
+          base64 -w 76 pi-win.tar.gz | split -b 5M -d -a 3 - "b64/pi.b64."
           size=$(stat -c %s pi-win.tar.gz)
-          echo "package size: $((size/1024/1024)) MiB"
-          rm -f pi-win.tar.gz.0*
-          split -b 5M -d -a 3 pi-win.tar.gz "pi-win.tar.gz."
-          ls -lh pi-win.tar.gz pi-win.tar.gz.*
+          echo "gz: $((size/1024/1024)) MiB -> base64 text parts:"
+          ls -lh b64/
 
-      - name: Push two parts to dl branch
+      - name: Push text parts to dl branch
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cd packages/coding-agent/dist
+          cd packages/coding-agent/dist/b64
           git init -q
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -q -b dl
-          git add pi-win.tar.gz.*
-          git commit -q -m "pi win-x64 @ ${GITHUB_SHA:0:7}" || true
+          git add 'pi.b64.*'
+          git commit -q -m "pi win-x64 base64 parts @ ${GITHUB_SHA:0:7}" || true
           git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push -f -q origin dl
