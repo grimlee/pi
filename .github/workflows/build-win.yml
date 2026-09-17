@@ -84,7 +84,7 @@ jobs:
           size=$(stat -c %s pi-win.tar.gz)
           echo "package size: $((size/1024/1024)) MiB"
           rm -f pi-win.tar.gz.0*
-          split -n 2 -d -a 2 pi-win.tar.gz "pi-win.tar.gz."
+          split -b 5M -d -a 3 pi-win.tar.gz "pi-win.tar.gz."
           ls -lh pi-win.tar.gz pi-win.tar.gz.*
 
       - name: Push two parts to dl branch
@@ -97,7 +97,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -q -b dl
-          git add pi-win.tar.gz.00 pi-win.tar.gz.01
+          git add pi-win.tar.gz.*
           git commit -q -m "pi win-x64 @ ${GITHUB_SHA:0:7}" || true
           git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push -f -q origin dl
