@@ -1,0 +1,101 @@
+name: Build Windows x64 only (pi.e, 2 parts)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag/commit 构建（如 v0.85.1 或 main）'
+        required: false
+        type: string
+        default: 'v0.85.1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-win-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-win:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build packages
+        run: npm run build
+
+      - name: Compile windows-x64 as pi.e
+        working-directory: packages/coding-agent
+        run: |
+          set -euo pipefail
+          bun build --compile --no-compile-autoload-bunfig \
+            --target="bun-windows-x64-baseline" \
+            ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
+            --outfile "pi.e"
+          if [ -f "pi.e.exe" ]; then mv -f "pi.e.exe" "pi.e"; fi
+          test -f pi.e && ls -lh pi.e
+
+      - name: Assemble runtime assets
+        working-directory: packages/coding-agent
+        run: |
+          set -euo pipefail
+          out="dist/win"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cp package.json README.md CHANGELOG.md "$out/"
+          cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm "$out/"
+          mkdir -p "$out/theme" && cp dist/modes/interactive/theme/*.json "$out/theme/"
+          mkdir -p "$out/assets" && cp dist/modes/interactive/assets/* "$out/assets/"
+          cp -r dist/core/export-html "$out/"
+          cp -r docs "$out/"
+          cp -r examples "$out/"
+          if [ -d ../tui/native/win32/prebuilds/win32-x64 ]; then
+            mkdir -p "$out/native/win32/prebuilds"
+            cp -R ../tui/native/win32/prebuilds/win32-x64 "$out/native/win32/prebuilds/"
+          else
+            echo "!! native prebuilds 缺失（终端辅助可能退化），继续"
+          fi
+          mv -f pi.e "$out/pi.e"
+          du -sh "$out"
+
+      - name: Package and split into two parts
+        working-directory: packages/coding-agent/dist
+        run: |
+          set -euo pipefail
+          tar -czf pi-win.tar.gz -C win .
+          size=$(stat -c %s pi-win.tar.gz)
+          echo "package size: $((size/1024/1024)) MiB"
+          rm -f pi-win.tar.gz.0*
+          split -n 2 -d -a 2 pi-win.tar.gz "pi-win.tar.gz."
+          ls -lh pi-win.tar.gz pi-win.tar.gz.*
+
+      - name: Push two parts to dl branch
+        run: |
+          set -euo pipefail
+          cd packages/coding-agent/dist
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b dl
+          git add pi-win.tar.gz.00 pi-win.tar.gz.01
+          git commit -q -m "pi win-x64 @ ${GITHUB_SHA:0:7}" || true
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -f -q origin dl
