@@ -8,23 +8,30 @@ on:
         required: false
         type: string
         default: 'v1.0.4'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-win.yml'
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-win-intranet-${{ inputs.ref }}
+  group: build-win-intranet-${{ inputs.ref || 'v1.0.4' }}
   cancel-in-progress: true
 
 jobs:
   build-win:
     runs-on: ubuntu-latest
+    env:
+      BUILD_REF: ${{ inputs.ref || 'v1.0.4' }}
     steps:
       - name: Checkout official Pi source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: earendil-works/pi
-          ref: ${{ inputs.ref }}
+          ref: ${{ env.BUILD_REF }}
           persist-credentials: false
 
       - name: Setup Bun
@@ -62,16 +69,16 @@ jobs:
 
           base64 -w 76 out/pi-windows-x64.zip | split -b 5M -d -a 3 - publish/pi.b64.
 
-          cat > publish/BUILD_INFO.txt <<EOF
-          source_repository=earendil-works/pi
-          source_ref=${{ inputs.ref }}
-          source_sha=${source_sha}
-          pi_version=${version}
-          archive=pi-windows-x64.zip
-          archive_sha256=${zip_sha}
-          encoding=base64
-          part_size=5MiB
-          EOF
+          {
+            echo "source_repository=earendil-works/pi"
+            echo "source_ref=${BUILD_REF}"
+            echo "source_sha=${source_sha}"
+            echo "pi_version=${version}"
+            echo "archive=pi-windows-x64.zip"
+            echo "archive_sha256=${zip_sha}"
+            echo "encoding=base64"
+            echo "part_size=5MiB"
+          } > publish/BUILD_INFO.txt
 
           printf '%s  %s\n' "${zip_sha}" "pi-windows-x64.zip" > publish/SHA256SUMS.txt
 
@@ -114,16 +121,18 @@ jobs:
           git checkout -q -b dl
 
           git add pi.b64.* BUILD_INFO.txt SHA256SUMS.txt RESTORE.ps1
-          git commit -q -m "Pi Windows x64 ${{ inputs.ref }} @ ${GITHUB_SHA:0:7}"
+          git commit -q -m "Pi Windows x64 ${BUILD_REF}"
 
           git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push -f -q origin dl
+          git push --force origin HEAD:refs/heads/dl
 
       - name: Summary
         run: |
-          echo "### Windows x64 intranet build" >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Source: `earendil-works/pi`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Ref: `${{ inputs.ref }}`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Output: `dl` branch as 5 MiB base64 text parts" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Rebuild locally on Windows with `RESTORE.ps1`" >> "${GITHUB_STEP_SUMMARY}"
+          {
+            echo '### Windows x64 intranet build'
+            echo
+            echo "Source: earendil-works/pi"
+            echo "Ref: ${BUILD_REF}"
+            echo "Output: dl branch as 5 MiB base64 text parts"
+            echo "Restore on Windows with RESTORE.ps1"
+          } >> "${GITHUB_STEP_SUMMARY}"
