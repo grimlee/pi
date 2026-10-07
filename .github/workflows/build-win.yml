@@ -1,104 +1,95 @@
-name: Build Windows x64 only (pi.e, base64 5MiB parts)
+name: Build Windows x64 (latest upstream)
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Tag/commit 构建（如 v0.85.1 或 main）'
+        description: 'Official Pi tag/branch/commit to build (for example v1.0.4 or main)'
         required: false
         type: string
-        default: 'main'
+        default: 'v1.0.4'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: build-win-${{ inputs.ref }}
+  group: build-win-upstream-${{ inputs.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-win:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout official Pi source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: earendil-works/pi
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.3.14'
+          bun-version: 1.3.14
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+          cache: npm
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Hydrate model data
+        run: npm run hydrate:model-data
 
-      - name: Build packages
-        run: npm run build
-
-      - name: Compile windows-x64 as pi.e
-        working-directory: packages/coding-agent
+      - name: Build Windows x64
         run: |
           set -euo pipefail
-          bun build --compile --no-compile-autoload-bunfig \
-            --target="bun-windows-x64-baseline" \
-            ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
-            --outfile "pi.e"
-          if [ -f "pi.e.exe" ]; then mv -f "pi.e.exe" "pi.e"; fi
-          test -f pi.e && ls -lh pi.e
+          ./scripts/build-binaries.sh \
+            --offline-model-data \
+            --platform windows-x64 \
+            --out "${GITHUB_WORKSPACE}/out"
 
-      - name: Assemble runtime assets
-        working-directory: packages/coding-agent
+      - name: Record build metadata
         run: |
           set -euo pipefail
-          out="dist/win"
-          rm -rf "$out"
-          mkdir -p "$out"
-          cp package.json README.md CHANGELOG.md "$out/"
-          cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm "$out/"
-          mkdir -p "$out/theme" && cp dist/modes/interactive/theme/*.json "$out/theme/"
-          mkdir -p "$out/assets" && cp dist/modes/interactive/assets/* "$out/assets/"
-          cp -r dist/core/export-html "$out/"
-          cp -r docs "$out/"
-          cp -r examples "$out/"
-          if [ -d ../tui/native/win32/prebuilds/win32-x64 ]; then
-            mkdir -p "$out/native/win32/prebuilds"
-            cp -R ../tui/native/win32/prebuilds/win32-x64 "$out/native/win32/prebuilds/"
-          else
-            echo "!! native prebuilds 缺失（终端辅助可能退化），继续"
-          fi
-          mv -f pi.e "$out/pi.e"
-          du -sh "$out"
+          version="$(node -p "require('./packages/coding-agent/package.json').version")"
+          sha="$(git rev-parse HEAD)"
+          {
+            echo "source_repository=earendil-works/pi"
+            echo "source_ref=${{ inputs.ref }}"
+            echo "source_sha=${sha}"
+            echo "pi_version=${version}"
+          } > out/BUILD_INFO.txt
+          (cd out && sha256sum pi-windows-x64.zip > SHA256SUMS)
+          cat out/BUILD_INFO.txt
+          cat out/SHA256SUMS
 
-      - name: Package, base64, split into 5 MiB text parts
-        working-directory: packages/coding-agent/dist
-        run: |
-          set -euo pipefail
-          rm -rf b64
-          mkdir -p b64
-          tar -czf pi-win.tar.gz -C win .
-          base64 -w 76 pi-win.tar.gz | split -b 5M -d -a 3 - "b64/pi.b64."
-          size=$(stat -c %s pi-win.tar.gz)
-          echo "gz: $((size/1024/1024)) MiB -> base64 text parts:"
-          ls -lh b64/
+      - name: Upload Windows x64 artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pi-windows-x64
+          path: |
+            out/pi-windows-x64.zip
+            out/SHA256SUMS
+            out/BUILD_INFO.txt
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Push text parts to dl branch
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+  smoke-test:
+    runs-on: windows-latest
+    needs: build
+    permissions:
+      actions: read
+    steps:
+      - name: Download Windows x64 artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pi-windows-x64
+          path: artifact
+
+      - name: Extract and smoke-test
+        shell: pwsh
         run: |
-          set -euo pipefail
-          cd packages/coding-agent/dist/b64
-          git init -q
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -q -b dl
-          git add 'pi.b64.*'
-          git commit -q -m "pi win-x64 base64 parts @ ${GITHUB_SHA:0:7}" || true
-          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push -f -q origin dl
+          Expand-Archive -LiteralPath artifact/pi-windows-x64.zip -DestinationPath extracted -Force
+          .\extracted\pi.exe --version
+          .\extracted\pi.exe --help | Select-Object -First 20
