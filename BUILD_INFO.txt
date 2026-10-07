@@ -1,0 +1,8 @@
+source_repository=earendil-works/pi
+source_ref=v1.0.4
+source_sha=7c10bd4337495ee613f2224843ecdf349b80d1df
+pi_version=1.0.4
+archive=pi-windows-x64.zip
+archive_sha256=52a95f6416929554c52d64bc40b575c0af5ae32565a34a7ab2f4463b83afe84a
+encoding=base64
+part_size=5MiB
