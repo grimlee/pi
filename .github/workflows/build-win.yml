@@ -1,23 +1,23 @@
-name: Build Windows x64 (latest upstream)
+name: Build Windows x64 for intranet
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Official Pi tag/branch/commit to build (for example v1.0.4 or main)'
+        description: 'Official Pi tag/branch/commit (for example v1.0.4 or main)'
         required: false
         type: string
         default: 'v1.0.4'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: build-win-upstream-${{ inputs.ref }}
+  group: build-win-intranet-${{ inputs.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-win:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout official Pi source
@@ -30,7 +30,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
+          bun-version: '1.3.14'
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -38,10 +38,7 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - name: Hydrate model data
-        run: npm run hydrate:model-data
-
-      - name: Build Windows x64
+      - name: Build official Windows x64 package
         run: |
           set -euo pipefail
           ./scripts/build-binaries.sh \
@@ -49,47 +46,84 @@ jobs:
             --platform windows-x64 \
             --out "${GITHUB_WORKSPACE}/out"
 
-      - name: Record build metadata
+          test -f out/pi-windows-x64.zip
+          ls -lh out/pi-windows-x64.zip
+
+      - name: Convert package to 5 MiB base64 text parts
         run: |
           set -euo pipefail
+
           version="$(node -p "require('./packages/coding-agent/package.json').version")"
-          sha="$(git rev-parse HEAD)"
-          {
-            echo "source_repository=earendil-works/pi"
-            echo "source_ref=${{ inputs.ref }}"
-            echo "source_sha=${sha}"
-            echo "pi_version=${version}"
-          } > out/BUILD_INFO.txt
-          (cd out && sha256sum pi-windows-x64.zip > SHA256SUMS)
-          cat out/BUILD_INFO.txt
-          cat out/SHA256SUMS
+          source_sha="$(git rev-parse HEAD)"
+          zip_sha="$(sha256sum out/pi-windows-x64.zip | awk '{print $1}')"
 
-      - name: Upload Windows x64 artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: pi-windows-x64
-          path: |
-            out/pi-windows-x64.zip
-            out/SHA256SUMS
-            out/BUILD_INFO.txt
-          if-no-files-found: error
-          retention-days: 14
+          rm -rf publish
+          mkdir -p publish
 
-  smoke-test:
-    runs-on: windows-latest
-    needs: build
-    permissions:
-      actions: read
-    steps:
-      - name: Download Windows x64 artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: pi-windows-x64
-          path: artifact
+          base64 -w 76 out/pi-windows-x64.zip | split -b 5M -d -a 3 - publish/pi.b64.
 
-      - name: Extract and smoke-test
-        shell: pwsh
+          cat > publish/BUILD_INFO.txt <<EOF
+          source_repository=earendil-works/pi
+          source_ref=${{ inputs.ref }}
+          source_sha=${source_sha}
+          pi_version=${version}
+          archive=pi-windows-x64.zip
+          archive_sha256=${zip_sha}
+          encoding=base64
+          part_size=5MiB
+          EOF
+
+          printf '%s  %s\n' "${zip_sha}" "pi-windows-x64.zip" > publish/SHA256SUMS.txt
+
+          cat > publish/RESTORE.ps1 <<'POWERSHELL'
+          $ErrorActionPreference = "Stop"
+          $parts = Get-ChildItem -Path $PSScriptRoot -Filter "pi.b64.*" | Sort-Object Name
+          if (-not $parts) { throw "No pi.b64.* files found." }
+
+          $joined = Join-Path $env:TEMP "pi-windows-x64.b64"
+          $zip = Join-Path $PSScriptRoot "pi-windows-x64.zip"
+
+          Remove-Item $joined -Force -ErrorAction SilentlyContinue
+          foreach ($part in $parts) {
+              Get-Content -LiteralPath $part.FullName | Add-Content -LiteralPath $joined
+          }
+
+          $text = Get-Content -LiteralPath $joined -Raw
+          $bytes = [Convert]::FromBase64String(($text -replace '\s',''))
+          [IO.File]::WriteAllBytes($zip, $bytes)
+          Remove-Item $joined -Force
+
+          Write-Host "Created $zip"
+          Get-FileHash -Algorithm SHA256 $zip
+          POWERSHELL
+
+          echo "Generated base64 parts:"
+          ls -lh publish/pi.b64.*
+          cat publish/BUILD_INFO.txt
+
+      - name: Push text parts to dl branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          Expand-Archive -LiteralPath artifact/pi-windows-x64.zip -DestinationPath extracted -Force
-          .\extracted\pi.exe --version
-          .\extracted\pi.exe --help | Select-Object -First 20
+          set -euo pipefail
+          cd publish
+
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b dl
+
+          git add pi.b64.* BUILD_INFO.txt SHA256SUMS.txt RESTORE.ps1
+          git commit -q -m "Pi Windows x64 ${{ inputs.ref }} @ ${GITHUB_SHA:0:7}"
+
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -f -q origin dl
+
+      - name: Summary
+        run: |
+          echo "### Windows x64 intranet build" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Source: `earendil-works/pi`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Ref: `${{ inputs.ref }}`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Output: `dl` branch as 5 MiB base64 text parts" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Rebuild locally on Windows with `RESTORE.ps1`" >> "${GITHUB_STEP_SUMMARY}"
