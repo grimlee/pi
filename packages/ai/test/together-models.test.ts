@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { getModel } from "../src/compat.ts";
+import { getModel, streamSimple } from "../src/compat.ts";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.ts";
+import type { Model } from "../src/types.ts";
 
 const originalTogetherApiKey = process.env.TOGETHER_API_KEY;
 
@@ -13,8 +14,8 @@ afterEach(() => {
 });
 
 describe("Together models", () => {
-	it("registers the default Kimi K2.6 model via OpenAI-compatible Chat Completions API", () => {
-		const model = getModel("together", "moonshotai/Kimi-K2.6");
+	it("registers the Kimi K3 model via OpenAI-compatible Chat Completions API", () => {
+		const model = getModel("together", "moonshotai/Kimi-K3");
 
 		expect(model).toBeDefined();
 		expect(model.api).toBe("openai-completions");
@@ -23,12 +24,12 @@ describe("Together models", () => {
 		expect(model.reasoning).toBe(true);
 		expect(model.thinkingLevelMap).toEqual({ minimal: null, low: null, medium: null });
 		expect(model.input).toEqual(["text", "image"]);
-		expect(model.contextWindow).toBe(262144);
-		expect(model.maxTokens).toBe(131000);
+		expect(model.contextWindow).toBe(1048576);
+		expect(model.maxTokens).toBe(131072);
 		expect(model.cost).toEqual({
-			input: 1.2,
-			output: 4.5,
-			cacheRead: 0.2,
+			input: 3,
+			output: 15,
+			cacheRead: 0.3,
 			cacheWrite: 0,
 		});
 		expect(model.compat).toEqual({
@@ -58,16 +59,14 @@ describe("Together models", () => {
 			thinkingFormat: "openai",
 		});
 
-		const deepSeekV4 = getModel("together", "deepseek-ai/DeepSeek-V4-Pro");
+		const deepSeekV4 = getModel("together", "deepseek-ai/DeepSeek-V4-Pro-0813");
 		expect(deepSeekV4.thinkingLevelMap).toEqual({
 			minimal: null,
 			low: null,
 			medium: null,
-			high: "high",
-			xhigh: null,
 		});
 		expect(deepSeekV4.compat).toMatchObject({
-			supportsReasoningEffort: true,
+			supportsReasoningEffort: false,
 			thinkingFormat: "together",
 		});
 
@@ -75,6 +74,31 @@ describe("Together models", () => {
 		expect(minimax.thinkingLevelMap).toEqual({ off: null, minimal: null, low: null, medium: null });
 		expect(minimax.compat?.thinkingFormat).toBeUndefined();
 		expect(minimax.compat?.supportsReasoningEffort).toBe(false);
+	});
+
+	it("preserves toggle plus native effort payloads for the historical undated DeepSeek endpoint", async () => {
+		// The dated endpoint is a separate catalog entry with toggle-only metadata.
+		const model: Model<"openai-completions"> = {
+			...getModel("together", "deepseek-ai/DeepSeek-V4-Pro-0813"),
+			id: "deepseek-ai/DeepSeek-V4-Pro",
+			thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: null },
+			compat: { supportsReasoningEffort: true, thinkingFormat: "together" },
+		};
+		let payload: Record<string, unknown> | undefined;
+		await streamSimple(
+			model,
+			{ messages: [{ role: "user", content: "test", timestamp: 0 }] },
+			{
+				apiKey: "test-key",
+				reasoning: "high",
+				onPayload: (value) => {
+					payload = value as Record<string, unknown>;
+					throw new Error("payload captured");
+				},
+			},
+		).result();
+		expect(payload?.reasoning_effort).toBe("high");
+		expect(payload?.reasoning).toEqual({ enabled: true });
 	});
 
 	it("resolves TOGETHER_API_KEY from the environment", () => {
