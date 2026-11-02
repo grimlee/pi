@@ -1,0 +1,26 @@
+name: One-time npm model fixture version survey
+on:
+  push:
+    branches: [fix/ci-pinned-regression-catalog]
+permissions:
+  contents: write
+jobs:
+  survey:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Inspect publication dates
+        run: |
+          npm view '@earendil-works/pi-ai' time --json > /tmp/versions.json
+          node -e 'const x=require("/tmp/versions.json"); console.log("last_versions",Object.entries(x).filter(([k,v])=>/^\\d/.test(k)).slice(-45)); console.log("pinned",x["0.86.1"])'
+      - name: Remove survey workflow
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -- .github/workflows/one-time-npm-version-survey.yml
+          git commit -m "ci: remove npm version survey"
+          git push origin HEAD:fix/ci-pinned-regression-catalog
