@@ -1,0 +1,82 @@
+name: One-time normalize duplicate API groups snapshot
+on:
+  push:
+    branches: [fix/ci-pinned-regression-catalog]
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
+          sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+      - name: Install and build live
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Normalize pinned JSON grouped API schema
+        run: |
+          dir="$(mktemp -d)"
+          npm pack @earendil-works/pi-ai@1.3.0 --ignore-scripts --silent --pack-destination "$dir"
+          tar -xzf "$dir"/*.tgz -C "$dir"
+          export ARCHIVE_JSON_DIR="$dir/package/dist/providers/data"
+          node --input-type=module <<'END'
+          import {readdirSync,readFileSync,writeFileSync} from 'node:fs';
+          import {join} from 'node:path';
+          import {createModelDataManifest,readModelDataStructure} from './packages/ai/scripts/model-data.ts';
+          const src='packages/ai/src/providers/data', archive=process.env.ARCHIVE_JSON_DIR;
+          const ranking=['openai-responses','anthropic-messages','google-generative-ai','openai-completions'];
+          let converted=0,held=0,models=0,collision=0;
+          for(const file of readdirSync(src).filter(f=>f.endsWith('.json')&&f!=='.manifest.json')){
+            let archived; try{archived=JSON.parse(readFileSync(join(archive,file),'utf8'))}catch{held++;continue}
+            const live=JSON.parse(readFileSync(join(src,file),'utf8'));
+            const liveApi=new Map();
+            for (const [api,group] of Object.entries(live))for(const key of Object.keys(group)) liveApi.set(key,api);
+            const byId=new Map();
+            function add(m){
+              if(!m||typeof m!=='object'||typeof m.id!=='string'||typeof m.api!=='string'||typeof m.provider!=='string')throw Error('bad model '+file);
+              const prev=byId.get(m.id);
+              if(prev){
+                collision++;
+                const preferred=liveApi.get(m.id);
+                if((preferred&&m.api===preferred)||(m.api!==prev.api&&ranking.indexOf(m.api)<ranking.indexOf(prev.api)))byId.set(m.id,m);
+              }else byId.set(m.id,m);
+            }
+            for(const v of Object.values(archived)){
+              if(v?.id&&v?.api)add(v);
+              else for(const m of Object.values(v??{}))add(m);
+            }
+            const updated={};
+            for(const m of byId.values()){(updated[m.api]??={})[m.id]=m;models++}
+            writeFileSync(join(src,file),JSON.stringify(updated,null,'\t')+'\n');converted++;
+          }
+          const files=Object.fromEntries(readdirSync(src).filter(f=>f.endsWith('.json')&&f!=='.manifest.json').map(f=>[f,readFileSync(join(src,f),'utf8')]));
+          const structure=readModelDataStructure('packages/ai');
+          writeFileSync(join(src,'.manifest.json'),JSON.stringify(createModelDataManifest(structure,files,'2026-10-14T00:00:00Z'),null,'\t')+'\n');
+          console.log({converted,held,models,collision});
+          END
+          npm run check:model-data
+      - name: Rebuild and static check pinned models
+        run: |
+          npm run build:offline
+          npm run check
+      - name: AI and coding-agent tests
+        run: |
+          npm run test --workspace=@earendil-works/pi-ai
+          npm run test --workspace=@earendil-works/pi-coding-agent
+      - name: Delete temporary workflow
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -- .github/workflows/one-time-normalize-duplicate-api-snapshot.yml
+          git commit -m "ci: delete temporary duplicate API normalization probe"
+          git push origin HEAD:fix/ci-pinned-regression-catalog
