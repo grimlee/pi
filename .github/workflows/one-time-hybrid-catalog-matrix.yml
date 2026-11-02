@@ -1,0 +1,65 @@
+name: One-time hybrid catalog fixture matrix
+on:
+  push:
+    branches: [fix/ci-pinned-regression-catalog]
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["1.2.0", "1.3.0", "1.4.0"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          cache: npm
+      - name: Native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
+          sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+      - name: npm install
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Live catalog build
+        run: npm run build
+      - name: Overlay archived catalog without removing newer providers
+        run: |
+          fixture_dir="$(mktemp -d)"
+          npm pack "@earendil-works/pi-ai@${{ matrix.version }}" --ignore-scripts --silent --pack-destination "$fixture_dir"
+          tar -xzf "$fixture_dir"/*.tgz -C "$fixture_dir"
+          cp -a "$fixture_dir/package/dist/providers/data/." packages/ai/src/providers/data/
+          node --input-type=module <<'END'
+          import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+          import { join } from "node:path";
+          import { createModelDataManifest, readModelDataStructure } from "./packages/ai/scripts/model-data.ts";
+          const packageRoot = "packages/ai";
+          const dir = join(packageRoot, "src/providers/data");
+          const dataFiles = readdirSync(dir).filter(x => x.endsWith(".json") && x !== ".manifest.json");
+          const contents = Object.fromEntries(dataFiles.map(x => [x,readFileSync(join(dir,x),"utf8")]));
+          const structure = readModelDataStructure(packageRoot);
+          writeFileSync(join(dir,".manifest.json"),JSON.stringify(createModelDataManifest(structure,contents,"2026-10-14T00:00:00Z"),null,"\t")+"\n");
+          END
+          npm run check:model-data
+      - name: Strict check
+        run: npm run check
+      - name: AI tests
+        run: npm run test --workspace=@earendil-works/pi-ai
+      - name: Coding agent tests
+        run: npm run test --workspace=@earendil-works/pi-coding-agent
+  cleanup:
+    needs: probe
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Remove temporary matrix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -- .github/workflows/one-time-hybrid-catalog-matrix.yml
+          git commit -m "ci: remove hybrid catalog diagnostic workflow"
+          git push origin HEAD:fix/ci-pinned-regression-catalog
