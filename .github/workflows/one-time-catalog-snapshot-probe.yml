@@ -1,0 +1,75 @@
+name: One-time catalog snapshot compatibility probe
+
+on:
+  push:
+    branches:
+      - fix/pi-npm-audit-20261102
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    if: github.repository == 'grimlee/pi'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
+          sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build with latest live catalog
+        run: npm run build
+      - name: Inspect pinned published catalog archive
+        id: archive
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/pi-model-probe
+          cd /tmp/pi-model-probe
+          npm pack @earendil-works/pi-ai@0.86.1 --ignore-scripts --silent
+          tar -xzf *.tgz
+          find package -maxdepth 4 -type d -name data | head -n 20
+          find package -name .manifest.json | head -n 10
+          find package/dist/providers/data -maxdepth 1 -type f | wc -l
+      - name: Validate pinned published model data
+        id: data
+        if: steps.archive.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cp -a /tmp/pi-model-probe/package/dist/providers/data/. packages/ai/src/providers/data/
+          npm run check:model-data
+      - name: Validate full static checks with pinned catalog
+        if: steps.data.outcome == 'success'
+        id: check
+        continue-on-error: true
+        run: npm run check
+      - name: Validate runtime tests with pinned catalog
+        if: steps.data.outcome == 'success'
+        id: tests
+        continue-on-error: true
+        run: npm test
+      - name: Remove temporary workflow
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -- .github/workflows/one-time-catalog-snapshot-probe.yml
+          git commit -m "ci: remove completed catalog snapshot probe"
+          git push origin HEAD:fix/pi-npm-audit-20261102
+      - name: Report
+        if: always()
+        run: |
+          echo "archive=${{ steps.archive.outcome }} data=${{ steps.data.outcome }} check=${{ steps.check.outcome }} tests=${{ steps.tests.outcome }}"
+          test "${{ steps.archive.outcome }}" = success
+          test "${{ steps.data.outcome }}" = success
+          test "${{ steps.check.outcome }}" = success
+          test "${{ steps.tests.outcome }}" = success
