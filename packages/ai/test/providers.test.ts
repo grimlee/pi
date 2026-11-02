@@ -171,7 +171,7 @@ describe("builtin providers", () => {
 			["openrouter", "openai/gpt-5.6-terra"],
 		] as const;
 		const unsupported = [
-			["fireworks", "accounts/fireworks/models/kimi-k2p6"],
+			["fireworks", "accounts/fireworks/models/qwen3p8-max"],
 			["openai", "gpt-4.1"],
 			["openai", "gpt-5.2"],
 			["anthropic", "claude-sonnet-4-5"],
@@ -239,14 +239,14 @@ describe("builtin providers", () => {
 		);
 	});
 
-	it("uses official Kimi K3 pricing for Moonshot providers", () => {
+	it("uses catalog Kimi K3 pricing for Moonshot providers", () => {
 		const models = builtinModels();
 		for (const provider of ["moonshotai", "moonshotai-cn"]) {
 			expect(models.getModel(provider, "kimi-k3")?.cost).toEqual({
 				input: 3,
 				output: 15,
 				cacheRead: 0.3,
-				cacheWrite: 0,
+				cacheWrite: 3,
 			});
 		}
 	});
