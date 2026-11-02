@@ -35,6 +35,24 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Build validates the newest live models.dev/OpenRouter catalog and compiles
+      # all runtime packages. Regression assertions require a reproducible catalog:
+      # otherwise upstream model removal/renaming breaks unrelated PR checks.
+      # This pinned, published package is immutable. Intentionally bump this exact
+      # version together with model-test expectations; never use an unpinned tag.
+      - name: Validate live model catalog
+        run: npm run check:model-data
+
+      - name: Restore pinned model catalog for deterministic regression tests
+        run: |
+          fixture_dir="$(mktemp -d)"
+          npm pack @earendil-works/pi-ai@0.86.1 --ignore-scripts --silent --pack-destination "$fixture_dir"
+          tar -xzf "$fixture_dir"/*.tgz -C "$fixture_dir"
+          test -f "$fixture_dir/package/dist/providers/data/.manifest.json"
+          rm -rf packages/ai/src/providers/data
+          cp -a "$fixture_dir/package/dist/providers/data" packages/ai/src/providers/data
+          npm run check:model-data
+
       - name: Check
         run: npm run check
 
